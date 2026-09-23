@@ -550,6 +550,7 @@ function initAudio(){
 }
 function updateAudio(thr, speed){
   if(!audioCtx || !soundOn) return;
+  if(!isFinite(thr) || !isFinite(speed)) return; // blindaje: nunca mandar NaN/Infinity al AudioParam
   const t = audioCtx.currentTime;
   motorOsc.forEach(m=>{
     m.osc.frequency.setTargetAtTime(m.base*(1+thr*2.1), t, 0.02);
@@ -633,6 +634,10 @@ function frame(now){
   );
   state.omega.addScaledVector(angAccel, dt);
 
+  // Límite de seguridad angular: evita que el integrador explote con inputs/choques extremos
+  const MAX_OMEGA = 4000*Math.PI/180;
+  if(state.omega.length()>MAX_OMEGA) state.omega.setLength(MAX_OMEGA);
+
   // Integrar orientación (velocidad angular en cuerpo, composición por la derecha)
   const angMag = state.omega.length();
   if(angMag>1e-6){
@@ -669,9 +674,24 @@ function frame(now){
 
   state.vel.addScaledVector(accel, dt);
   state.pos.addScaledVector(state.vel, dt);
+
+  // Límite de seguridad lineal: evita que el integrador "explote" a Infinity con inputs/choques extremos
+  const MAX_SPEED = 120;
+  if(state.vel.length()>MAX_SPEED) state.vel.setLength(MAX_SPEED);
+
   if(state.pos.y<0.05){
     state.pos.y=0.05; state.vel.y=Math.max(0,state.vel.y*-0.2); state.vel.x*=0.9; state.vel.z*=0.9;
     state.omega.multiplyScalar(0.7); // el choque contra el suelo también frena la rotación
+  }
+
+  // Red de seguridad: si por algún motivo el estado se corrompe (NaN/Infinity), recuperar el dron
+  if(!isFinite(state.pos.x)||!isFinite(state.pos.y)||!isFinite(state.pos.z)||
+     !isFinite(state.vel.x)||!isFinite(state.vel.y)||!isFinite(state.vel.z)||
+     !isFinite(state.omega.x)||!isFinite(state.omega.y)||!isFinite(state.omega.z)){
+    reset();
+    const m = document.getElementById('msg');
+    m.textContent = 'Física inestable — dron reiniciado';
+    setTimeout(()=>{ if(m.textContent==='Física inestable — dron reiniciado') m.textContent=''; }, 1800);
   }
 
   drone.position.copy(state.pos);
