@@ -569,6 +569,7 @@ document.getElementById('soundBtn').onclick = function(){
 // ---------- Bucle ----------
 let last = performance.now();
 function frame(now){
+ try{
   const dt = Math.min((now-last)/1000, 0.05); last = now;
   const axes = pollGamepad();
 
@@ -723,7 +724,11 @@ function frame(now){
   windsock.rotation.y = Math.min(0.9, windSpeedNow*0.25);
 
   renderer.render(scene, camera);
-  requestAnimationFrame(frame);
+ } catch(err){
+  // Red de seguridad: un error puntual (ej. un valor no finito) no debe congelar el simulador entero
+  console.error('Error en frame():', err);
+ }
+ requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
