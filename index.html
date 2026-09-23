@@ -407,6 +407,9 @@ const THRUST_TAU = 0.055; // retardo de motores/hélices al responder al throttl
 const SAG_K = 0.10; // caída de tensión: el empuje se resiente un poco si el throttle sube muy rápido
 let thrustState = 0; // throttle "real" tras el retardo de motor
 let prevThrCmd = 0;
+let crashed = false; // true tras un choque fuerte: bloquea el dron hasta reiniciar (R)
+const CRASH_SPEED = 9;  // m/s de impacto para considerarlo choque fuerte
+const CRASH_TILT = 65;  // grados de inclinación respecto a vertical para considerarlo volcado
 
 // Viento ambiente: varía lento y suave (paseo aleatorio acotado), afecta la velocidad AÉREA relativa
 const wind = new THREE.Vector3(0,0,0);
@@ -422,6 +425,8 @@ function updateWind(dt){
 function reset(){
   state.pos.set(0,5,0); state.vel.set(0,0,0);
   state.quat.identity(); state.omega.set(0,0,0);
+  crashed = false;
+  document.getElementById('msg').textContent='';
 }
 document.getElementById('resetBtn').onclick = reset;
 window.addEventListener('keydown', e=>{ if(e.key==='r'||e.key==='R') reset(); });
@@ -651,6 +656,7 @@ function frame(now){
   // --- Empuje: motores/hélices no responden instantáneo (spin-up) + leve caída por tensión ---
   const kThr = 1-Math.exp(-dt/THRUST_TAU);
   thrustState += (rThr-thrustState)*kThr;
+  if(crashed) thrustState = 0; // motores "muertos" tras el choque
   const sag = 1 - SAG_K*Math.max(0, (rThr-prevThrCmd)/Math.max(dt,0.001))*0.02;
   prevThrCmd = rThr;
   const up = new THREE.Vector3(0,1,0).applyQuaternion(state.quat);
@@ -681,8 +687,26 @@ function frame(now){
   if(state.vel.length()>MAX_SPEED) state.vel.setLength(MAX_SPEED);
 
   if(state.pos.y<0.05){
-    state.pos.y=0.05; state.vel.y=Math.max(0,state.vel.y*-0.2); state.vel.x*=0.9; state.vel.z*=0.9;
-    state.omega.multiplyScalar(0.7); // el choque contra el suelo también frena la rotación
+    if(!crashed){
+      // ¿Fue un choque fuerte o el dron quedó muy volcado? -> se considera un CHOQUE real
+      const impactSpeed = state.vel.length();
+      const droneUp = new THREE.Vector3(0,1,0).applyQuaternion(state.quat);
+      const tiltDeg = Math.acos(Math.min(1,Math.max(-1,droneUp.y)))*180/Math.PI;
+      if(impactSpeed>CRASH_SPEED || tiltDeg>CRASH_TILT){
+        crashed = true;
+        const m = document.getElementById('msg');
+        m.textContent = '💥 Dron estrellado — pulsa R para reiniciar';
+      }
+    }
+    state.pos.y=0.05;
+    if(crashed){
+      // el dron queda totalmente inmóvil tal como impactó, sin más vibración ni giro
+      state.vel.set(0,0,0);
+      state.omega.set(0,0,0);
+    } else {
+      state.vel.y=Math.max(0,state.vel.y*-0.2); state.vel.x*=0.9; state.vel.z*=0.9;
+      state.omega.multiplyScalar(0.7); // el choque/apoyo contra el suelo también frena la rotación
+    }
   }
 
   // Red de seguridad: si por algún motivo el estado se corrompe (NaN/Infinity), recuperar el dron
