@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulador Dron Acro</title>
+<style>
+  :root{--bg:#0b0e14;--panel:#12161f;--fg:#e6e9ef;--acc:#4dd6ff;--warn:#ff5d5d;--ok:#5dff9d}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;overflow:hidden}
+  canvas{display:block}
+  #hud{position:fixed;top:0;left:0;right:0;padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top,0px));
+    display:flex;gap:18px;flex-wrap:wrap;font-size:12px;background:linear-gradient(#000a,transparent);pointer-events:none}
+  #hud .box{background:#0006;border:1px solid #ffffff22;border-radius:8px;padding:6px 10px;pointer-events:auto}
+  #panel{position:fixed;bottom:0;left:0;right:0;padding:10px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));
+    background:linear-gradient(transparent,#000c);display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px}
+  #panel .box{background:var(--panel);border:1px solid #ffffff22;border-radius:8px;padding:6px 10px}
+  label{display:flex;gap:6px;align-items:center;white-space:nowrap}
+  input[type=number]{width:56px;background:#0004;color:var(--fg);border:1px solid #ffffff33;border-radius:4px;padding:2px 4px}
+  button{background:var(--acc);border:none;color:#00212b;font-weight:600;border-radius:6px;padding:6px 10px;cursor:pointer}
+  button.sec{background:#ffffff22;color:var(--fg)}
+  .bar{width:80px;height:8px;background:#fff2;border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle}
+  .bar>i{display:block;height:100%;background:var(--acc)}
+  #crosshair{position:fixed;top:50%;left:50%;width:20px;height:20px;margin:-10px 0 0 -10px;pointer-events:none}
+  #crosshair::before,#crosshair::after{content:'';position:absolute;background:#fff9;}
+  #crosshair::before{left:9px;top:0;width:2px;height:20px}
+  #crosshair::after{top:9px;left:0;height:2px;width:20px}
+  #msg{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:14px;color:#fff9;pointer-events:none}
+  #gateFlash{position:fixed;top:38%;left:50%;transform:translate(-50%,-50%) scale(0.8);text-align:center;
+    font-size:34px;font-weight:800;letter-spacing:2px;color:#ffd83d;text-shadow:0 0 14px #ffb70099,0 0 3px #000;
+    pointer-events:none;opacity:0;transition:opacity .25s,transform .25s}
+  #gateFlash.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  #circuitHud{position:fixed;top:0;right:0;padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top,0px));
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;pointer-events:none}
+  #circuitHud .cbox{background:#0007;border:1px solid #ffffff22;border-radius:8px;padding:5px 10px;font-size:11px;min-width:150px;text-align:right}
+  #circuitHud .cbox b{color:var(--acc)}
+  #circuitHud .cbox.done b{color:var(--ok)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="crosshair"></div>
+<div id="msg"></div>
+<div id="gateFlash"></div>
+<div id="circuitHud"></div>
+
+<div id="hud">
+  <div class="box" id="gpStatus">Buscando mando/joystick...</div>
+  <div class="box">Alt: <span id="alt">0.0</span> m</div>
+  <div class="box">Vel: <span id="spd">0.0</span> m/s</div>
+  <div class="box">Actitud R/P/Y: <span id="att">0 / 0 / 0</span>°</div>
+  <div class="box">Throttle: <span class="bar"><i id="thrBar" style="width:0%"></i></span></div>
+</div>
+
+<div id="panel">
+  <div class="box">
+    <button id="calBtn">Calibrar ejes</button>
+    <button class="sec" id="calThrBtn">Calibrar throttle (min/max)</button>
+    <button class="sec" id="resetBtn">Reset (R)</button>
+    <button class="sec" id="soundBtn">🔇 Sonido</button>
+  </div>
+  <div class="box">
+    Roll:<span id="mapRoll">0</span> Pitch:<span id="mapPitch">0</span> Yaw:<span id="mapYaw">0</span> Thr:<span id="mapThr">0</span>
+  </div>
+  <div class="box">
+    Invertir:
+    <button class="sec" id="invRollBtn">Roll</button>
+    <button class="sec" id="invPitchBtn">Pitch</button>
+    <button class="sec" id="invYawBtn">Yaw</button>
+    <button class="sec" id="invThrBtn">Thr</button>
+  </div>
+
+  <div class="box">
+    <label>Rate máx (°/s) <input type="number" id="rateMax" value="540"></label>
+    <label>Expo <input type="number" id="expo" value="0.35" step="0.05"></label>
+    <label>Resp. motor (ms) <input type="number" id="tau" value="35"></label>
+    <label>Empuje máx (g) <input type="number" id="thrustG" value="2.2" step="0.1"></label>
+    <label>Viento máx (m/s) <input type="number" id="windMax" value="0" step="0.5"></label>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---------- Escena ----------
+const renderer = new THREE.WebGLRenderer({canvas:document.getElementById('c'), antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fc7ff);
+scene.fog = new THREE.Fog(0x8fc7ff, 40, 400);
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.05, 1000);
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x445566,1.1));
+const sun = new THREE.DirectionalLight(0xffffff,0.8); sun.position.set(50,80,20); scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000,2000,1,1), new THREE.MeshStandardMaterial({color:0x2f6b3a}));
+ground.rotation.x=-Math.PI/2; scene.add(ground);
+const grid = new THREE.GridHelper(2000,200,0xffffff,0xffffff);
+grid.material.opacity=0.15; grid.material.transparent=true; grid.position.y=0.01; scene.add(grid);
+
+// ---------- Detalle del mapa ----------
+function rand(min,max){ return min+Math.random()*(max-min); }
+
+// Montañas lejanas: dan referencia de horizonte y sensación de escala/velocidad al volar rápido
+const mountainMat = new THREE.MeshStandardMaterial({color:0x5f7a8f});
+for(let i=0;i<16;i++){
+  const ang = (i/16)*Math.PI*2 + rand(-0.15,0.15);
+  const dist = rand(340,470);
+  const h = rand(40,95), r = rand(35,70);
+  const mnt = new THREE.Mesh(new THREE.ConeGeometry(r,h,7), mountainMat);
+  mnt.position.set(Math.cos(ang)*dist, h/2-3, Math.sin(ang)*dist);
+  mnt.rotation.y = rand(0,Math.PI*2);
+  scene.add(mnt);
+}
+
+// Postes de referencia para percibir movimiento
+for(let i=0;i<30;i++){
+  const h = 3+Math.random()*10;
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,h,6), new THREE.MeshStandardMaterial({color:0x8a5a3a}));
+  m.position.set((Math.random()-0.5)*300,h/2,(Math.random()-0.5)*300);
+  scene.add(m);
+}
+
+// Árboles (pinos): tronco + copas cónicas, agrupados en manchas de bosque como en un terreno real
+const trunkMat = new THREE.MeshStandardMaterial({color:0x5a3d23});
+const leafMats = [0x2f6b3a,0x356e40,0x295c33].map(c=>new THREE.MeshStandardMaterial({color:c}));
+function addTree(x,z,scale){
+  const tree = new THREE.Group();
+  const th = rand(2,3.2)*scale;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12*scale,0.16*scale,th,6), trunkMat);
+  trunk.position.y = th/2;
+  tree.add(trunk);
+  for(let l=0;l<2;l++){
+    const lh = rand(1.7,2.6)*scale, lr = (1.35-l*0.35)*scale;
+    const leaf = new THREE.Mesh(new THREE.ConeGeometry(lr,lh,7), leafMats[Math.floor(Math.random()*leafMats.length)]);
+    leaf.position.y = th + l*lh*0.6;
+    tree.add(leaf);
+  }
+  tree.position.set(x,0,z);
+  tree.rotation.y = rand(0,Math.PI*2);
+  scene.add(tree);
+}
+for(let cluster=0;cluster<5;cluster++){
+  const cx = rand(-260,260), cz = rand(-260,260);
+  const n = 8+Math.floor(rand(0,8));
+  for(let i=0;i<n;i++) addTree(cx+rand(-22,22), cz+rand(-22,22), rand(0.7,1.3));
+}
+for(let i=0;i<15;i++) addTree(rand(-280,280), rand(-280,280), rand(0.6,1.2));
+
+// Rocas dispersas
+const rockMat = new THREE.MeshStandardMaterial({color:0x7d7d7d, flatShading:true});
+for(let i=0;i<25;i++){
+  const s = rand(0.4,1.8);
+  const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(s,0), rockMat);
+  rock.position.set(rand(-280,280), s*0.4, rand(-280,280));
+  rock.rotation.set(rand(0,Math.PI),rand(0,Math.PI),rand(0,Math.PI));
+  scene.add(rock);
+}
+
+const gatePoleMat = new THREE.MeshStandardMaterial({color:0x333333});
+
+// Hangar cerca del punto de spawn, como referencia de "base"
+const hangar = new THREE.Mesh(new THREE.BoxGeometry(8,3.5,10), new THREE.MeshStandardMaterial({color:0xb5b8bd}));
+hangar.position.set(-14,1.75,10); scene.add(hangar);
+const roof = new THREE.Mesh(new THREE.CylinderGeometry(5.2,5.2,10,3,1,false), new THREE.MeshStandardMaterial({color:0x8a3f3f}));
+roof.rotation.z = Math.PI/2; roof.position.set(-14,3.5+1.2,10); scene.add(roof);
+
+// Manga de viento: indica visualmente la dirección/intensidad del viento simulado
+const windsockPole = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,4,6), gatePoleMat);
+windsockPole.position.set(-8,2,6); scene.add(windsockPole);
+const windsockGroup = new THREE.Group();
+const windsock = new THREE.Mesh(new THREE.ConeGeometry(0.35,1.4,10,1,true), new THREE.MeshStandardMaterial({color:0xff5d5d, side:THREE.DoubleSide}));
+windsock.rotation.z = Math.PI/2; windsock.position.x = 0.75;
+windsockGroup.add(windsock);
+windsockGroup.position.set(-8,3.8,6);
+scene.add(windsockGroup);
+
+// Parches de tierra sobre el pasto para dar textura al terreno
+const dirtMat = new THREE.MeshStandardMaterial({color:0x6b5233});
+for(let i=0;i<14;i++){
+  const s = rand(4,14);
+  const patch = new THREE.Mesh(new THREE.CircleGeometry(s,10), dirtMat);
+  patch.rotation.x=-Math.PI/2;
+  patch.position.set(rand(-280,280), 0.015, rand(-280,280));
+  scene.add(patch);
+}
+
+// ---------- Dron ----------
+const drone = new THREE.Group();
+const body = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.08,0.28), new THREE.MeshStandardMaterial({color:0x222222}));
+drone.add(body);
+const armMat = new THREE.MeshStandardMaterial({color:0x444444});
+[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([sx,sz])=>{
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.35,0.03,0.03), armMat);
+  arm.position.set(sx*0.15, 0, sz*0.15);
+  arm.rotation.y = sx*sz>0 ? Math.PI/4 : -Math.PI/4;
+  drone.add(arm);
+  const propColor = sx*sz>0 ? 0xff4444 : 0x44aaff;
+  const prop = new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.01,16), new THREE.MeshStandardMaterial({color:propColor, transparent:true, opacity:0.6}));
+  prop.position.set(sx*0.28,0.02,sz*0.28);
+  drone.add(prop);
+});
+const noseMark = new THREE.Mesh(new THREE.ConeGeometry(0.03,0.08,6), new THREE.MeshStandardMaterial({color:0xffdd33}));
+noseMark.rotation.x = Math.PI/2; noseMark.position.set(0,0.05,-0.2);
+drone.add(noseMark);
+scene.add(drone);
+
+// ---------- Circuitos de aros (gates) ----------
+// Cada circuito es una lista ORDENADA de aros. Sólo el aro que toca pasar está encendido
+// en AMARILLO; al cruzarlo, se apaga (verde) y se enciende el siguiente, hasta la meta.
+const GATE_COLOR = { upcoming:0x2b4a6b, active:0xffe14d, cleared:0x39c97a };
+
+function makeGateNumberSprite(num,isFinish){
+  const canvas = document.createElement('canvas'); canvas.width=64; canvas.height=64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = isFinish ? 'rgba(255,180,20,0.9)' : 'rgba(10,14,20,0.65)';
+  ctx.beginPath(); ctx.arc(32,32,29,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.7)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font='bold 30px system-ui,sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(isFinish?'M':String(num), 32, 34);
+  const tex = new THREE.CanvasTexture(canvas);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
+  spr.scale.set(1,1,1);
+  return spr;
+}
+
+function gateNormal(positions,i){
+  const cur = positions[i];
+  let dir;
+  if(i===0) dir = new THREE.Vector3(positions[1].x-cur.x,0,positions[1].z-cur.z);
+  else if(i===positions.length-1) dir = new THREE.Vector3(cur.x-positions[i-1].x,0,cur.z-positions[i-1].z);
+  else dir = new THREE.Vector3(positions[i+1].x-positions[i-1].x,0,positions[i+1].z-positions[i-1].z);
+  if(dir.lengthSq()<1e-6) dir.set(0,0,1);
+  return dir.normalize();
+}
+
+function createCircuit(name, positions){
+  const gates = positions.map((p,i)=>{
+    const isFinish = i===positions.length-1;
+    const radius = isFinish?2.0:1.6;
+    const normal = gateNormal(positions,i);
+
+    const group = new THREE.Group();
+    // aro de soporte exterior, oscuro y metálico (estructura del gate)
+    const outer = new THREE.Mesh(new THREE.TorusGeometry(radius*1.16,0.045,10,36),
+      new THREE.MeshStandardMaterial({color:0x181818, metalness:0.65, roughness:0.45}));
+    group.add(outer);
+    // aro interior luminoso: su color indica el estado (por pasar / activo / superado)
+    const ringMat = new THREE.MeshStandardMaterial({color:GATE_COLOR.upcoming, emissive:GATE_COLOR.upcoming, emissiveIntensity:0.3, roughness:0.3, metalness:0.15});
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius,0.11,14,44), ringMat);
+    group.add(ring);
+    group.position.set(p.x,p.y,p.z);
+    group.lookAt(p.x+normal.x, p.y, p.z+normal.z);
+    scene.add(group);
+
+    // marca circular en el piso + haz vertical tenue como referencia de altura
+    const marker = new THREE.Mesh(new THREE.RingGeometry(radius*0.4,radius*0.55,24),
+      new THREE.MeshBasicMaterial({color:isFinish?0xffd83d:0x2b4a6b, transparent:true, opacity:0.4, side:THREE.DoubleSide}));
+    marker.rotation.x=-Math.PI/2; marker.position.set(p.x,0.02,p.z); scene.add(marker);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,p.y,6,1,true),
+      new THREE.MeshBasicMaterial({color:isFinish?0xffd83d:0x2b4a6b, transparent:true, opacity:0.18}));
+    beam.position.set(p.x,p.y/2,p.z); scene.add(beam);
+
+    // número de orden del aro dentro del circuito
+    const numSprite = makeGateNumberSprite(i+1,isFinish);
+    numSprite.position.set(p.x, p.y+radius+0.65, p.z);
+    scene.add(numSprite);
+
+    return { group, ringMat, center:new THREE.Vector3(p.x,p.y,p.z), normal, radius, isFinish, light:null };
+  });
+  return { name, gates, activeIndex:0, lastSigned:undefined, cleared:0 };
+}
+
+function setGateState(g,state){
+  g.ringMat.color.setHex(GATE_COLOR[state]);
+  g.ringMat.emissive.setHex(GATE_COLOR[state]);
+  g.ringMat.emissiveIntensity = state==='active' ? 1.15 : (state==='cleared' ? 0.35 : 0.3);
+}
+
+function activateGate(circuit,index){
+  const g = circuit.gates[index];
+  setGateState(g,'active');
+  if(!g.light){
+    g.light = new THREE.PointLight(GATE_COLOR.active, 1.3, 10);
+    g.light.position.copy(g.center);
+    scene.add(g.light);
+  } else {
+    g.light.color.setHex(GATE_COLOR.active); g.light.intensity = 1.3;
+  }
+  const toDrone = drone.position.clone().sub(g.center);
+  circuit.lastSigned = toDrone.dot(g.normal);
+}
+
+function flashGateMsg(text){
+  const el = document.getElementById('gateFlash');
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(flashGateMsg._t);
+  flashGateMsg._t = setTimeout(()=>el.classList.remove('show'), 1600);
+}
+
+function onGatePassed(circuit){
+  const g = circuit.gates[circuit.activeIndex];
+  setGateState(g,'cleared');
+  if(g.light) g.light.intensity = 0.35;
+  if(g.isFinish){
+    flashGateMsg('¡META! '+circuit.name);
+    // pequeña pausa y reinicio del circuito para otra vuelta
+    setTimeout(()=>{
+      circuit.gates.forEach(gg=>setGateState(gg,'upcoming'));
+      circuit.activeIndex = 0;
+      activateGate(circuit,0);
+    }, 1500);
+  } else {
+    flashGateMsg('Aro '+(circuit.activeIndex+1)+' ✓ — '+circuit.name);
+    circuit.activeIndex++;
+    activateGate(circuit,circuit.activeIndex);
+  }
+}
+
+function updateCircuits(){
+  circuits.forEach(circuit=>{
+    const g = circuit.gates[circuit.activeIndex];
+    const toDrone = drone.position.clone().sub(g.center);
+    const signed = toDrone.dot(g.normal);
+    const radial = toDrone.clone().sub(g.normal.clone().multiplyScalar(signed)).length();
+    if(circuit.lastSigned!==undefined && Math.sign(circuit.lastSigned)!==Math.sign(signed) && Math.sign(signed)!==0 && radial < g.radius*0.9){
+      onGatePassed(circuit);
+    } else {
+      circuit.lastSigned = signed;
+    }
+  });
+  // HUD lateral con el progreso de cada circuito
+  const hud = document.getElementById('circuitHud');
+  hud.innerHTML = circuits.map(c=>
+    `<div class="cbox"><b>${c.name}</b><br>Aro ${Math.min(c.activeIndex+1,c.gates.length)} / ${c.gates.length}</div>`
+  ).join('');
+}
+
+// Circuito 1 — Bajo (cerca del spawn, ideal para calentar)
+const positionsLow = [];
+{
+  const n=8, radius=55;
+  for(let i=0;i<n;i++){
+    const ang=(i/n)*Math.PI*2;
+    positionsLow.push({
+      x: Math.cos(ang)*radius + Math.sin(ang*2)*8,
+      z: Math.sin(ang)*radius + Math.cos(ang*3)*8,
+      y: 3+Math.sin(ang*2)*1.4
+    });
+  }
+}
+// Circuito 2 — Medio (más lejos, más alto, curvas más cerradas)
+const positionsMid = [];
+{
+  const n=9, radius=42, cx=175, cz=130;
+  for(let i=0;i<n;i++){
+    const ang=(i/n)*Math.PI*2;
+    positionsMid.push({
+      x: cx+Math.cos(ang)*radius + Math.sin(ang*3)*10,
+      z: cz+Math.sin(ang)*radius + Math.cos(ang*2)*10,
+      y: 12+Math.sin(ang*3)*4+ (i%2)*3
+    });
+  }
+}
+// Circuito 3 — Alto / espiral ascendente (velocidad y altura)
+const positionsHigh = [];
+{
+  const n=8, cx=-190, cz=-160;
+  for(let i=0;i<n;i++){
+    const t=i/(n-1);
+    const ang=t*Math.PI*2.3;
+    const r=18+t*32;
+    positionsHigh.push({
+      x: cx+Math.cos(ang)*r,
+      z: cz+Math.sin(ang)*r,
+      y: 8+t*34
+    });
+  }
+}
+
+const circuits = [
+  createCircuit('Circuito Bajo', positionsLow),
+  createCircuit('Circuito Medio', positionsMid),
+  createCircuit('Circuito Alto', positionsHigh)
+];
+circuits.forEach(c=>activateGate(c,0));
+
+// ---------- Estado físico ----------
+const state = {
+  pos: new THREE.Vector3(0,5,0),
+  vel: new THREE.Vector3(0,0,0),
+  quat: new THREE.Quaternion(),
+  omega: new THREE.Vector3(0,0,0), // rad/s cuerpo (x=pitch,y=yaw,z=roll)
+};
+const GRAVITY = 9.81, MASS = 0.5; // g real (9.81 m/s²) y ~500g, típico de un quad de 5"
+// Tensor de inercia diagonal (kg·m²): roll/pitch parecidos, yaw mayor (inercia real de un quad en X)
+const INERTIA = new THREE.Vector3(0.0035, 0.0035, 0.006); // orden (pitch, yaw, roll) igual que state.omega
+// --- Resistencia del aire real: F = 0.5 * rho * Cd * A * v², por eje del CUERPO ---
+// rho = densidad del aire (1.225 kg/m³ a nivel del mar), Cd*A estimado por cara de un quad ~250-500g:
+//   Z (de frente, corta el aire con el morro) es la cara más pequeña -> mucha menos resistencia -> mayor vel. punta
+//   X (de costado, expone los brazos) es intermedia
+//   Y (de panza/lomo, expone frame+hélices) es la más grande -> limita la velocidad vertical y de caída libre
+const AIR_RHO = 1.225;
+const DRAG_BODY = new THREE.Vector3(0.028, 0.065, 0.012); // (lateral X, vertical Y, frontal Z) = 0.5*rho*Cd*A
+const ANG_DRAG_K = 0.05; // arrastre aerodinámico angular (proporcional a omega^2)
+const THRUST_TAU = 0.055; // retardo de motores/hélices al responder al throttle (spin-up)
+const SAG_K = 0.10; // caída de tensión: el empuje se resiente un poco si el throttle sube muy rápido
+let thrustState = 0; // throttle "real" tras el retardo de motor
+let prevThrCmd = 0;
+
+// Viento ambiente: varía lento y suave (paseo aleatorio acotado), afecta la velocidad AÉREA relativa
+const wind = new THREE.Vector3(0,0,0);
+function updateWind(dt){
+  const maxWind = parseFloat(document.getElementById('windMax')?.value)||0;
+  if(maxWind<=0){ wind.set(0,0,0); return; }
+  wind.x += (Math.random()-0.5)*dt*maxWind*0.6;
+  wind.z += (Math.random()-0.5)*dt*maxWind*0.6;
+  wind.y += (Math.random()-0.5)*dt*maxWind*0.2;
+  if(wind.length()>maxWind) wind.setLength(maxWind);
+}
+
+function reset(){
+  state.pos.set(0,5,0); state.vel.set(0,0,0);
+  state.quat.identity(); state.omega.set(0,0,0);
+}
+document.getElementById('resetBtn').onclick = reset;
+window.addEventListener('keydown', e=>{ if(e.key==='r'||e.key==='R') reset(); });
+
+// ---------- Entradas: Gamepad ----------
+// Modo 2 (el más común): stick izquierdo = throttle (eje Y) + yaw (eje X)
+//                         stick derecho  = pitch (eje Y) + roll (eje X)
+let mapping = {thr:1, yaw:0, pitch:3, roll:2, invRoll:1, invPitch:1, invYaw:-1, invThr:1};
+// Por defecto se asume un stick que descansa en el centro (0) = throttle mínimo,
+// y al empujarlo hacia arriba (típicamente -1 en la convención del Gamepad API) = throttle máximo.
+// Así, sin tocar nada, el throttle arranca en 0. Usa "Calibrar throttle" si tu hardware es distinto (una palanca sin resorte, por ejemplo).
+let thrMin = 0, thrMax = -1; // valores crudos del eje en la posición mínima y máxima real del stick
+let calibrating = null; // canal a asignar
+const dead = 0.06;
+
+document.getElementById('calBtn').onclick = ()=>{
+  const orden = ['thr','yaw','pitch','roll'];
+  let i=0;
+  const msg = document.getElementById('msg');
+  function next(){
+    if(i>=orden.length){ msg.textContent=''; return; }
+    msg.textContent = 'Mueve el stick para: ' + {roll:'ROLL (alabeo)',pitch:'PITCH (cabeceo)',yaw:'YAW (guiñada)',thr:'THROTTLE (gas)'}[orden[i]];
+    calibrating = orden[i];
+  }
+  window._calDone = (ch, axisIdx)=>{
+    mapping[ch]=axisIdx; updateMapLabels(); i++; next();
+  };
+  next();
+};
+document.getElementById('calThrBtn').onclick = ()=>{
+  const msg = document.getElementById('msg');
+  msg.textContent = 'Lleva el THROTTLE al MÍNIMO (abajo del todo) y espera...';
+  setTimeout(()=>{
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = [...pads].find(p=>p);
+    if(!gp){ msg.textContent='No se detectó joystick.'; return; }
+    thrMin = gp.axes[mapping.thr]||0;
+    msg.textContent = 'Ahora lleva el THROTTLE al MÁXIMO (arriba del todo) y espera...';
+    setTimeout(()=>{
+      const pads2 = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp2 = [...pads2].find(p=>p);
+      thrMax = gp2.axes[mapping.thr]||1;
+      msg.textContent = 'Throttle calibrado ✔';
+      setTimeout(()=>msg.textContent='', 1200);
+    }, 1800);
+  }, 1800);
+};
+function updateMapLabels(){
+  document.getElementById('mapRoll').textContent=mapping.roll;
+  document.getElementById('mapPitch').textContent=mapping.pitch;
+  document.getElementById('mapYaw').textContent=mapping.yaw;
+  document.getElementById('mapThr').textContent=mapping.thr;
+}
+updateMapLabels();
+
+function setupInvertBtn(btnId, key){
+  const btn = document.getElementById(btnId);
+  function paint(){
+    const inv = mapping[key]<0;
+    btn.style.background = inv ? 'var(--warn)' : '';
+    btn.style.color = inv ? '#fff' : '';
+    btn.textContent = btn.textContent.replace(/ ✓$| ✗$/,'') + (inv?' ✓':'');
+  }
+  btn.onclick = ()=>{ mapping[key] = mapping[key]<0 ? 1 : -1; paint(); };
+  paint();
+}
+setupInvertBtn('invRollBtn','invRoll');
+setupInvertBtn('invPitchBtn','invPitch');
+setupInvertBtn('invYawBtn','invYaw');
+setupInvertBtn('invThrBtn','invThr');
+
+let lastAxes = [];
+function pollGamepad(){
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = [...pads].find(p=>p);
+  const st = document.getElementById('gpStatus');
+  if(!gp){ st.textContent='Sin joystick — usa WASD/flechas como respaldo'; return null; }
+  st.textContent = 'Conectado: ' + gp.id.slice(0,40);
+  const axes = gp.axes;
+  if(calibrating){
+    let best=-1,bestDelta=0.5;
+    axes.forEach((v,idx)=>{
+      const prev = lastAxes[idx]??0;
+      const d = Math.abs(v-prev);
+      if(d>bestDelta){bestDelta=d;best=idx;}
+    });
+    if(best>=0){ window._calDone(calibrating, best); calibrating=null; }
+  }
+  lastAxes = axes.slice();
+  return axes;
+}
+
+// Respaldo de teclado (si no hay joystick)
+const keys = {};
+window.addEventListener('keydown', e=>keys[e.key.toLowerCase()]=true);
+window.addEventListener('keyup', e=>keys[e.key.toLowerCase()]=false);
+
+function applyExpo(x, e){
+  const s = Math.sign(x); x=Math.abs(x);
+  return s*((1-e)*x + e*x*x*x);
+}
+function dz(v){ return Math.abs(v)<dead?0:(v-Math.sign(v)*dead)/(1-dead); }
+
+// ---------- Sonido (sintetizado, sin archivos externos) ----------
+let audioCtx=null, motorOsc=[], noiseGain=null, soundOn=false;
+function initAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const master = audioCtx.createGain(); master.gain.value=0.4; master.connect(audioCtx.destination);
+  const baseFreqs = [140,150,133,158]; // 4 motores, ligeramente distintos = zumbido realista
+  motorOsc = baseFreqs.map(f=>{
+    const osc = audioCtx.createOscillator(); osc.type='sawtooth'; osc.frequency.value=f;
+    const g = audioCtx.createGain(); g.gain.value=0.01;
+    osc.connect(g); g.connect(master); osc.start();
+    return {osc,g,base:f};
+  });
+  const bufSize = audioCtx.sampleRate*2;
+  const buf = audioCtx.createBuffer(1,bufSize,audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for(let i=0;i<bufSize;i++) data[i]=Math.random()*2-1;
+  const noise = audioCtx.createBufferSource(); noise.buffer=buf; noise.loop=true;
+  const filt = audioCtx.createBiquadFilter(); filt.type='bandpass'; filt.frequency.value=900;
+  noiseGain = audioCtx.createGain(); noiseGain.gain.value=0;
+  noise.connect(filt); filt.connect(noiseGain); noiseGain.connect(master);
+  noise.start();
+}
+function updateAudio(thr, speed){
+  if(!audioCtx || !soundOn) return;
+  const t = audioCtx.currentTime;
+  motorOsc.forEach(m=>{
+    m.osc.frequency.setTargetAtTime(m.base*(1+thr*2.1), t, 0.02);
+    m.g.gain.setTargetAtTime(0.012+thr*0.05, t, 0.05);
+  });
+  noiseGain.gain.setTargetAtTime(Math.min(0.09, speed*0.012), t, 0.15);
+}
+document.getElementById('soundBtn').onclick = function(){
+  initAudio();
+  soundOn = !soundOn;
+  if(audioCtx.state==='suspended') audioCtx.resume();
+  this.textContent = soundOn ? '🔊 Sonido' : '🔇 Sonido';
+  if(!soundOn){ motorOsc.forEach(m=>m.g.gain.value=0); if(noiseGain) noiseGain.gain.value=0; }
+};
+
+// ---------- Bucle ----------
+let last = performance.now();
+function frame(now){
+  const dt = Math.min((now-last)/1000, 0.05); last = now;
+  const axes = pollGamepad();
+
+  let rRoll=0,rPitch=0,rYaw=0,rThr=0;
+  if(axes){
+    rRoll = dz(axes[mapping.roll]||0)*mapping.invRoll;
+    rPitch = dz(axes[mapping.pitch]||0)*mapping.invPitch;
+    rYaw = dz(axes[mapping.yaw]||0)*mapping.invYaw;
+    let thrRaw = axes[mapping.thr]||0;
+    rThr = Math.max(0, Math.min(1, (thrRaw-thrMin)/(thrMax-thrMin)));
+    if(mapping.invThr<0) rThr = 1-rThr;
+  } else {
+    rRoll = (keys['d']?1:0)-(keys['a']?1:0);
+    rPitch = (keys['s']?1:0)-(keys['w']?1:0);
+    rYaw = (keys['e']?1:0)-(keys['q']?1:0);
+    if(keys['arrowup']) rThr = Math.min(1,(window._kThr||0)+dt);
+    else if(keys['arrowdown']) rThr = Math.max(0,(window._kThr||0)-dt);
+    else rThr = window._kThr||0;
+    window._kThr = rThr;
+  }
+
+  const expoV = parseFloat(document.getElementById('expo').value)||0;
+  const rateMax = (parseFloat(document.getElementById('rateMax').value)||540) * Math.PI/180;
+  const tau = Math.max(5,parseFloat(document.getElementById('tau').value)||35)/1000;
+  const thrustG = parseFloat(document.getElementById('thrustG').value)||2.2;
+
+  // --- Autoridad de yaw realista ---
+  // En un quad real el yaw NO sale de diferencial de empuje entre brazos (como roll/pitch),
+  // sino del torque de reacción de las hélices (arrastre diferencial CW vs CCW). Esa autoridad
+  // es bastante más débil, depende del empuje/RPM actual (casi no hay yaw al ralentí) y el eje
+  // "engancha" más lento porque hay menos par disponible frente a la inercia del disco de hélices.
+  const yawAuthority = 0.12 + 0.88*Math.min(1, thrustState*1.15);
+  const tauYaw = tau*2.6;
+
+  const cmd = new THREE.Vector3(
+    applyExpo(rPitch, expoV)*rateMax,
+    applyExpo(rYaw, expoV)*rateMax*yawAuthority,
+    -applyExpo(rRoll, expoV)*rateMax
+  );
+
+  // --- Dinámica angular real (ecuaciones de Euler con acoplamiento giroscópico) ---
+  // Los motores producen un TORQUE hacia el rate deseado, no el rate directamente:
+  // torque = I*(cmd-omega)/tau, limitado a lo que los motores realmente pueden dar.
+  const torque = new THREE.Vector3(
+    INERTIA.x*(cmd.x-state.omega.x)/tau,
+    INERTIA.y*(cmd.y-state.omega.y)/tauYaw,
+    INERTIA.z*(cmd.z-state.omega.z)/tau
+  );
+  // Arrastre aerodinámico angular (frena más cuanto más rápido gira).
+  // El yaw tiene más arrastre relativo: el disco de las hélices opone más resistencia a girar sobre Y.
+  const angDrag = new THREE.Vector3(
+    -ANG_DRAG_K*state.omega.x*Math.abs(state.omega.x),
+    -ANG_DRAG_K*2.2*state.omega.y*Math.abs(state.omega.y),
+    -ANG_DRAG_K*state.omega.z*Math.abs(state.omega.z)
+  );
+  // Término giroscópico -omega x (I*omega): un eje girando afecta a los otros dos
+  const Iw = new THREE.Vector3(INERTIA.x*state.omega.x, INERTIA.y*state.omega.y, INERTIA.z*state.omega.z);
+  const gyro = new THREE.Vector3().crossVectors(state.omega, Iw).multiplyScalar(-1);
+  const angAccel = new THREE.Vector3(
+    (torque.x+angDrag.x+gyro.x)/INERTIA.x,
+    (torque.y+angDrag.y+gyro.y)/INERTIA.y,
+    (torque.z+angDrag.z+gyro.z)/INERTIA.z
+  );
+  state.omega.addScaledVector(angAccel, dt);
+
+  // Integrar orientación (velocidad angular en cuerpo, composición por la derecha)
+  const angMag = state.omega.length();
+  if(angMag>1e-6){
+    const axis = state.omega.clone().normalize();
+    const dq = new THREE.Quaternion().setFromAxisAngle(axis, angMag*dt);
+    state.quat.multiply(dq);
+    state.quat.normalize();
+  }
+
+  // --- Empuje: motores/hélices no responden instantáneo (spin-up) + leve caída por tensión ---
+  const kThr = 1-Math.exp(-dt/THRUST_TAU);
+  thrustState += (rThr-thrustState)*kThr;
+  const sag = 1 - SAG_K*Math.max(0, (rThr-prevThrCmd)/Math.max(dt,0.001))*0.02;
+  prevThrCmd = rThr;
+  const up = new THREE.Vector3(0,1,0).applyQuaternion(state.quat);
+  // Efecto suelo: más empuje cerca del piso (colchón de aire)
+  const groundEffect = 1 + 0.15*Math.max(0, 1-state.pos.y/0.6);
+  const thrustMag = Math.max(0, thrustState*sag)*thrustG*GRAVITY*MASS*groundEffect;
+  const accel = up.multiplyScalar(thrustMag/MASS);
+  accel.y -= GRAVITY;
+
+  // --- Arrastre lineal cuadrático y anisotrópico, calculado con la velocidad RELATIVA AL AIRE ---
+  updateWind(dt);
+  const airVel = state.vel.clone().sub(wind);
+  const invQuat = state.quat.clone().invert();
+  const velBody = airVel.applyQuaternion(invQuat);
+  const dragBody = new THREE.Vector3(
+    -DRAG_BODY.x*velBody.x*Math.abs(velBody.x),
+    -DRAG_BODY.y*velBody.y*Math.abs(velBody.y),
+    -DRAG_BODY.z*velBody.z*Math.abs(velBody.z)
+  );
+  const dragWorld = dragBody.applyQuaternion(state.quat);
+  accel.addScaledVector(dragWorld, 1/MASS);
+
+  state.vel.addScaledVector(accel, dt);
+  state.pos.addScaledVector(state.vel, dt);
+  if(state.pos.y<0.05){
+    state.pos.y=0.05; state.vel.y=Math.max(0,state.vel.y*-0.2); state.vel.x*=0.9; state.vel.z*=0.9;
+    state.omega.multiplyScalar(0.7); // el choque contra el suelo también frena la rotación
+  }
+
+  drone.position.copy(state.pos);
+  drone.quaternion.copy(state.quat);
+
+  // Cámara persecución tipo FPV suave
+  const camOffset = new THREE.Vector3(0,0.12,0.55).applyQuaternion(state.quat);
+  const desiredCamPos = state.pos.clone().add(camOffset);
+  camera.position.lerp(desiredCamPos, Math.min(1,dt*12));
+  const lookQuat = state.quat.clone();
+  const camQuatTarget = lookQuat;
+  camera.quaternion.slerp(camQuatTarget, Math.min(1,dt*10));
+
+  // HUD
+  const euler = new THREE.Euler().setFromQuaternion(state.quat,'YXZ');
+  document.getElementById('alt').textContent = state.pos.y.toFixed(1);
+  document.getElementById('spd').textContent = state.vel.length().toFixed(1);
+  document.getElementById('att').textContent = [euler.z,euler.x,euler.y].map(r=>(r*180/Math.PI).toFixed(0)).join(' / ');
+  document.getElementById('thrBar').style.width = (rThr*100).toFixed(0)+'%';
+  updateAudio(thrustState, state.vel.length());
+
+  updateCircuits();
+
+  // Manga de viento: gira hacia donde sopla el viento y se despliega más con más intensidad
+  const windSpeedNow = wind.length();
+  if(windSpeedNow>0.02){
+    windsockGroup.rotation.y = Math.atan2(wind.x, wind.z) + Math.PI;
+  }
+  windsock.rotation.y = Math.min(0.9, windSpeedNow*0.25);
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
